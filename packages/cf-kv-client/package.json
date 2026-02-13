@@ -1,0 +1,21 @@
+{
+  "name": "@nhnace/cf-kv-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare KV REST API client and CLI tool",
+  "main": "./dist/client.js",
+  "bin": {
+    "cf-kv": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "typescript": "^5.7.0"
+  }
+}

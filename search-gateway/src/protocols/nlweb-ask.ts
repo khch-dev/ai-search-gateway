@@ -1,6 +1,7 @@
 import type { Context } from 'hono';
-import { searchAutoRAG } from '../core/ai-search';
-import { extractCredentials, MISSING_CREDENTIALS_ERROR } from '../core/credentials';
+import { searchAutoRAG, type SearchFilter } from '../core/ai-search';
+import { loadCredentials, MISSING_CREDENTIALS_ERROR } from '../core/credentials';
+import type { Env } from '../index';
 
 // NLWeb 스펙 기반 custom extension 구현
 // 공식 NLWeb 스펙: https://github.com/microsoft/NLWeb/blob/main/docs/nlweb-rest-api.md
@@ -13,12 +14,29 @@ interface NLWebRequest {
   site?: string;
   streaming?: boolean;
   query_id?: string;
+  filters?: SearchFilter[];
 }
 
-export const nlwebAskHandler = async (c: Context): Promise<Response> => {
-  const creds = extractCredentials(c);
+function parseFilters(raw: unknown): SearchFilter[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: SearchFilter[] = [];
+  for (const item of raw) {
+    if (item && typeof item === 'object' && 'type' in item && 'key' in item && 'value' in item) {
+      const t = (item as Record<string, unknown>).type;
+      const k = (item as Record<string, unknown>).key;
+      const v = (item as Record<string, unknown>).value;
+      if (typeof t === 'string' && typeof k === 'string' && typeof v === 'string') {
+        out.push({ type: t, key: k, value: v });
+      }
+    }
+  }
+  return out.length ? out : undefined;
+}
+
+export const nlwebAskHandler = async (c: Context<{ Bindings: Env }>): Promise<Response> => {
+  const creds = await loadCredentials(c);
   if (!creds) {
-    return c.json(MISSING_CREDENTIALS_ERROR, 401);
+    return c.json(MISSING_CREDENTIALS_ERROR, 503);
   }
 
   // F14: as 단언 대신 런타임 검증으로 실제 타입 확인
@@ -38,20 +56,21 @@ export const nlwebAskHandler = async (c: Context): Promise<Response> => {
     return c.json({ error: 'query is required and must not be empty' }, 400);
   }
 
-  // 선택적 필드 추출 (타입 안전)
+  // 선택적 필드 추출 (타입 안전), filters는 search.sh 형식으로 전달
   const body: NLWebRequest = {
     query,
     mode: typeof rawBody['mode'] === 'string' ? rawBody['mode'] : undefined,
     site: typeof rawBody['site'] === 'string' ? rawBody['site'] : undefined,
     streaming: typeof rawBody['streaming'] === 'boolean' ? rawBody['streaming'] : undefined,
     query_id: typeof rawBody['query_id'] === 'string' ? rawBody['query_id'] : undefined,
+    filters: parseFilters(rawBody['filters']),
   };
 
-  const { accountId, apiToken, autoragName } = creds;
+  const { accountId, searchApiToken, autoragName } = creds;
 
   let results;
   try {
-    results = await searchAutoRAG(accountId, apiToken, autoragName, query);
+    results = await searchAutoRAG(accountId, searchApiToken, autoragName, query, body.filters);
   } catch (err) {
     return c.json({ error: `AutoRAG error: ${err instanceof Error ? err.message : String(err)}` }, 502);
   }

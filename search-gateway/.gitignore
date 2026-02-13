@@ -1,0 +1,8 @@
+# 로컬 개발용 자격증명 - 절대 커밋 금지
+.dev.vars
+
+# Wrangler 빌드 아티팩트
+.wrangler/
+
+# Node.js
+node_modules/

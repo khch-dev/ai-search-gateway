@@ -5,14 +5,14 @@ import { mcpHandler } from './protocols/mcp';
 import { nlwebAskHandler } from './protocols/nlweb-ask';
 import { llmIngestHandler } from './protocols/llm-ingest';
 
-type Env = {
+export type Env = {
   SEARCH_HOST_ORIGIN: string;
+  KV_CREDENTIALS: KVNamespace;
+  // Dev 모드: .dev.vars에서 자동으로 읽힘
+  CF_ACCOUNT_ID?: string;
+  CF_SEARCH_API_TOKEN?: string;
+  CF_AUTORAG_NAME?: string;
 };
-
-function maskToken(s: string | undefined): string {
-  if (!s || s.length < 8) return '***';
-  return `${s.slice(0, 4)}...${s.slice(-4)}`;
-}
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -29,18 +29,7 @@ app.use('*', rateLimitMiddleware);
 app.use('*', async (c, next) => {
   const method = c.req.method;
   const path = c.req.path;
-  const accountId = c.req.header('X-CF-Account-ID');
-  const apiToken = c.req.header('X-CF-API-Token');
-  const autoragName = c.req.header('X-CF-Autorag-Name');
-  console.log('[search-gateway] HTTP 수신:', {
-    method,
-    path,
-    headers: {
-      'X-CF-Account-ID': accountId ?? '(none)',
-      'X-CF-API-Token': apiToken ? maskToken(apiToken) : '(none)',
-      'X-CF-Autorag-Name': autoragName ?? '(none)',
-    },
-  });
+  console.log('[search-gateway] HTTP 수신:', { method, path });
   await next();
   console.log('[search-gateway] HTTP 응답:', { status: c.res.status });
 });

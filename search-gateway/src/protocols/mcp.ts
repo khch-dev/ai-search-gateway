@@ -3,8 +3,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { z } from 'zod';
 import { searchAutoRAG } from '../core/ai-search';
-import { extractCredentials, MISSING_CREDENTIALS_ERROR } from '../core/credentials';
+import { loadCredentials, MISSING_CREDENTIALS_ERROR } from '../core/credentials';
 import { getFormatter, type FormatType } from '../formatters/index';
+import type { Env } from '../index';
 
 // MCP SDK 기반 MCP Server 구현
 // - McpServer: MCP 프로토콜 라이프사이클(initialize → initialized → tools/call) 자동 처리
@@ -12,11 +13,11 @@ import { getFormatter, type FormatType } from '../formatters/index';
 // - sessionIdGenerator: undefined → 무상태(stateless) 모드 (Workers 요청 간 상태 유지 불가)
 // - 요청마다 McpServer + transport 생성 (Workers stateless 특성상 불가피)
 
-export const mcpHandler = async (c: Context): Promise<Response> => {
-  const creds = extractCredentials(c);
-  if (!creds) return c.json(MISSING_CREDENTIALS_ERROR, 401);
+export const mcpHandler = async (c: Context<{ Bindings: Env }>): Promise<Response> => {
+  const creds = await loadCredentials(c);
+  if (!creds) return c.json(MISSING_CREDENTIALS_ERROR, 503);
 
-  const { accountId, apiToken, autoragName } = creds;
+  const { accountId, searchApiToken, autoragName } = creds;
 
   const server = new McpServer({
     name: 'search-gateway',
@@ -34,7 +35,7 @@ export const mcpHandler = async (c: Context): Promise<Response> => {
         .describe('응답 포맷'),
     },
     async ({ query, format }) => {
-      const results = await searchAutoRAG(accountId, apiToken, autoragName, query);
+      const results = await searchAutoRAG(accountId, searchApiToken, autoragName, query);
       const text = getFormatter(format as FormatType).format(results);
       return { content: [{ type: 'text' as const, text }] };
     },

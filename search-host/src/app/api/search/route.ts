@@ -10,9 +10,6 @@ interface SearchRequestBody {
   protocol: Protocol;
   format: 'html' | 'markdown' | 'json-ld';
   query: string;
-  accountId: string;
-  apiToken: string;
-  autoragName: string;
 }
 
 function getGatewayPath(protocol: Protocol): string {
@@ -24,11 +21,6 @@ function getGatewayPath(protocol: Protocol): string {
     case 'llm-ingest':
       return '/llm-ingest';
   }
-}
-
-function maskToken(s: string): string {
-  if (!s || s.length < 8) return '***';
-  return `${s.slice(0, 4)}...${s.slice(-4)}`;
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -47,13 +39,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { protocol, format, query, accountId, apiToken, autoragName } = body;
+  const { protocol, format, query } = body;
 
   // 필수 필드 검증
-  if (!accountId?.trim() || !apiToken?.trim() || !autoragName?.trim() || !query?.trim()) {
+  if (!query?.trim()) {
     console.log('[search-host] HTTP 응답:', { status: 400, bodySummary: 'Missing required fields' });
     return NextResponse.json(
-      { error: 'Missing required fields: accountId, apiToken, autoragName, query' },
+      { error: 'Missing required field: query' },
       { status: 400 },
     );
   }
@@ -68,28 +60,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   // MCP 프로토콜: SDK Client를 사용하여 표준 MCP 라이프사이클 수행
   // (initialize → initialized → tools/call 핸드셰이크 자동 처리)
+  // 자격증명은 search-gateway가 KV 또는 .dev.vars에서 직접 로드
   if (protocol === 'mcp') {
-    console.log('[search-host] 타 서버 HTTP 요청 (MCP SDK):', {
-      url: targetUrl,
-      headers: {
-        'X-CF-Account-ID': accountId.trim(),
-        'X-CF-API-Token': maskToken(apiToken),
-        'X-CF-Autorag-Name': autoragName.trim(),
-      },
-    });
+    console.log('[search-host] 타 서버 HTTP 요청 (MCP SDK):', { url: targetUrl });
 
-    const transport = new StreamableHTTPClientTransport(
-      new URL(targetUrl),
-      {
-        requestInit: {
-          headers: {
-            'X-CF-Account-ID': accountId.trim(),
-            'X-CF-API-Token': apiToken.trim(),
-            'X-CF-Autorag-Name': autoragName.trim(),
-          },
-        },
-      },
-    );
+    const transport = new StreamableHTTPClientTransport(new URL(targetUrl));
 
     const client = new Client({ name: 'search-host', version: '0.1.0' });
     try {
@@ -122,11 +97,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   // NLWeb / LLM-Ingest: 기존 fetch proxy 방식 유지
+  // 자격증명은 search-gateway가 KV 또는 .dev.vars에서 직접 로드
   const gatewayBody = JSON.stringify({ query, format });
   const requestHeaders: Record<string, string> = {
-    'X-CF-Account-ID': accountId.trim(),
-    'X-CF-API-Token': apiToken.trim(),
-    'X-CF-Autorag-Name': autoragName.trim(),
     'Content-Type': 'application/json',
     'Accept': 'application/json',
   };
@@ -135,11 +108,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   console.log('[search-host] 타 서버 HTTP 요청:', {
     method: 'POST',
     url: targetUrl,
-    headers: {
-      'X-CF-Account-ID': accountId.trim(),
-      'X-CF-API-Token': maskToken(apiToken),
-      'X-CF-Autorag-Name': autoragName.trim(),
-    },
     bodyLength: gatewayBody.length,
   });
 

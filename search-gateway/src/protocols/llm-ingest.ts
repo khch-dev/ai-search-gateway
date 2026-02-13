@@ -1,7 +1,24 @@
 import type { Context } from 'hono';
-import { searchAutoRAG } from '../core/ai-search';
-import { extractCredentials, MISSING_CREDENTIALS_ERROR } from '../core/credentials';
+import { searchAutoRAG, type SearchFilter } from '../core/ai-search';
+import { loadCredentials, MISSING_CREDENTIALS_ERROR } from '../core/credentials';
+import type { Env } from '../index';
 import type { AISearchResult } from '../core/ai-search';
+
+function parseFilters(raw: unknown): SearchFilter[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: SearchFilter[] = [];
+  for (const item of raw) {
+    if (item && typeof item === 'object' && 'type' in item && 'key' in item && 'value' in item) {
+      const t = (item as Record<string, unknown>).type;
+      const k = (item as Record<string, unknown>).key;
+      const v = (item as Record<string, unknown>).value;
+      if (typeof t === 'string' && typeof k === 'string' && typeof v === 'string') {
+        out.push({ type: t, key: k, value: v });
+      }
+    }
+  }
+  return out.length ? out : undefined;
+}
 
 // F9: 이중 직렬화 없이 schema_markup을 직접 객체로 구성하는 헬퍼
 function buildSchemaMarkup(results: AISearchResult[]): object {
@@ -39,19 +56,21 @@ export interface LLMIngestResponse {
   };
 }
 
-export const llmIngestHandler = async (c: Context): Promise<Response> => {
-  const creds = extractCredentials(c);
+export const llmIngestHandler = async (c: Context<{ Bindings: Env }>): Promise<Response> => {
+  const creds = await loadCredentials(c);
   if (!creds) {
-    return c.json(MISSING_CREDENTIALS_ERROR, 401);
+    return c.json(MISSING_CREDENTIALS_ERROR, 503);
   }
 
-  // query는 body 또는 쿼리 파라미터 모두 지원
+  // query는 body 또는 쿼리 파라미터 모두 지원, filters는 body에서만 (search.sh 형식)
   let query: string | undefined;
+  let filters: SearchFilter[] | undefined;
 
   const contentType = c.req.header('Content-Type') ?? '';
   if (contentType.includes('application/json')) {
-    const body = await c.req.json<{ query?: string }>().catch((): { query?: string } => ({}));
+    const body = await c.req.json<{ query?: string; filters?: unknown }>().catch((): { query?: string; filters?: unknown } => ({}));
     query = body.query?.trim();
+    filters = parseFilters(body.filters);
   }
 
   // body에 없으면 쿼리 파라미터에서 시도
@@ -63,11 +82,11 @@ export const llmIngestHandler = async (c: Context): Promise<Response> => {
     return c.json({ error: 'query is required (body JSON or query param)' }, 400);
   }
 
-  const { accountId, apiToken, autoragName } = creds;
+  const { accountId, searchApiToken, autoragName } = creds;
 
   let results;
   try {
-    results = await searchAutoRAG(accountId, apiToken, autoragName, query);
+    results = await searchAutoRAG(accountId, searchApiToken, autoragName, query, filters);
   } catch (err) {
     return c.json({ error: `AutoRAG error: ${err instanceof Error ? err.message : String(err)}` }, 502);
   }
