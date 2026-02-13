@@ -1,4 +1,6 @@
 import { type NextRequest, NextResponse } from 'next/server';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 export const runtime = 'edge';
 
@@ -64,29 +66,68 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const targetUrl = `${gatewayUrl}${getGatewayPath(protocol)}`;
 
-  // MCP 프로토콜: JSON-RPC 2.0 형식으로 변환
-  // StreamableHTTPServerTransport는 application/json Accept 헤더로 일반 JSON 응답 반환
-  let gatewayBody: string;
+  // MCP 프로토콜: SDK Client를 사용하여 표준 MCP 라이프사이클 수행
+  // (initialize → initialized → tools/call 핸드셰이크 자동 처리)
   if (protocol === 'mcp') {
-    gatewayBody = JSON.stringify({
-      jsonrpc: '2.0',
-      id: crypto.randomUUID(),
-      method: 'tools/call',
-      params: {
-        name: 'search',
-        arguments: { query, format },
+    console.log('[search-host] 타 서버 HTTP 요청 (MCP SDK):', {
+      url: targetUrl,
+      headers: {
+        'X-CF-Account-ID': accountId.trim(),
+        'X-CF-API-Token': maskToken(apiToken),
+        'X-CF-Autorag-Name': autoragName.trim(),
       },
     });
-  } else {
-    gatewayBody = JSON.stringify({ query, format });
+
+    const transport = new StreamableHTTPClientTransport(
+      new URL(targetUrl),
+      {
+        requestInit: {
+          headers: {
+            'X-CF-Account-ID': accountId.trim(),
+            'X-CF-API-Token': apiToken.trim(),
+            'X-CF-Autorag-Name': autoragName.trim(),
+          },
+        },
+      },
+    );
+
+    const client = new Client({ name: 'search-host', version: '0.1.0' });
+    try {
+      await client.connect(transport); // initialize → initialized 핸드셰이크 자동 처리
+      const result = await client.callTool({ name: 'search', arguments: { query, format } });
+
+      // F6 반영: tool handler 내부 에러는 SDK가 isError: true로 반환 (예외 미발생)
+      // result.content 타입을 명시적으로 캐스팅 (SDK 반환 타입이 unknown인 경우 대응)
+      type ContentItem = { type: string; text?: string };
+      const content = (result.content as ContentItem[] | undefined) ?? [];
+
+      if (result.isError) {
+        const firstContent = content[0];
+        const errMsg = firstContent?.type === 'text' && firstContent.text ? firstContent.text : 'MCP tool 실행 중 오류가 발생했습니다.';
+        console.log('[search-host] HTTP 응답 (MCP isError):', { error: errMsg });
+        return NextResponse.json({ error: errMsg }, { status: 502 });
+      }
+
+      const firstContent = content[0];
+      const text = firstContent?.type === 'text' && firstContent.text ? firstContent.text : '';
+      console.log('[search-host] HTTP 응답 (MCP):', { textLength: text.length });
+      return NextResponse.json({ text });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log('[search-host] HTTP 응답 (MCP error):', { status: 502, error: msg });
+      return NextResponse.json({ error: msg }, { status: 502 });
+    } finally {
+      await client.close().catch(() => undefined);
+    }
   }
 
+  // NLWeb / LLM-Ingest: 기존 fetch proxy 방식 유지
+  const gatewayBody = JSON.stringify({ query, format });
   const requestHeaders: Record<string, string> = {
     'X-CF-Account-ID': accountId.trim(),
     'X-CF-API-Token': apiToken.trim(),
     'X-CF-Autorag-Name': autoragName.trim(),
     'Content-Type': 'application/json',
-    // MCP: text/event-stream 없이 application/json만 지정 → transport가 SSE 대신 JSON 응답 반환
     'Accept': 'application/json',
   };
 
@@ -109,7 +150,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       body: gatewayBody,
     });
 
-    // F10: 응답이 JSON이 아닐 수 있으므로 text()로 먼저 읽고 파싱 시도
+    // 응답이 JSON이 아닐 수 있으므로 text()로 먼저 읽고 파싱 시도
     const responseText = await gatewayResponse.text();
     let responseData: unknown;
     try {
@@ -134,7 +175,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       bodySummary,
     });
 
-    // Gateway 응답 원문을 그대로 화면에 노출하기 위해 payload에 포함
     const payload =
       typeof responseData === 'object' && responseData !== null && !Array.isArray(responseData)
         ? { ...(responseData as object), _rawGatewayPayload: responseText }
