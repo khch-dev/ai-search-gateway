@@ -50,7 +50,7 @@ export const llmIngestHandler = async (c: Context): Promise<Response> => {
 
   const contentType = c.req.header('Content-Type') ?? '';
   if (contentType.includes('application/json')) {
-    const body = await c.req.json<{ query?: string }>().catch(() => ({}));
+    const body = await c.req.json<{ query?: string }>().catch((): { query?: string } => ({}));
     query = body.query?.trim();
   }
 

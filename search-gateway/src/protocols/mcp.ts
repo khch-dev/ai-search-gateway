@@ -1,6 +1,8 @@
 import type { Context } from 'hono';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+// Workers/Edge 환경에서는 WebStandardStreamableHTTPServerTransport 사용
+// (StreamableHTTPServerTransport는 Node.js IncomingMessage 기반이라 Workers 미호환)
+import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { z } from 'zod';
 import { searchAutoRAG } from '../core/ai-search';
 import { extractCredentials, MISSING_CREDENTIALS_ERROR } from '../core/credentials';
@@ -44,7 +46,7 @@ export const mcpHandler = async (c: Context): Promise<Response> => {
     },
   );
 
-  const transport = new StreamableHTTPServerTransport({
+  const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
   });
 
