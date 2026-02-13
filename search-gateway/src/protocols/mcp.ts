@@ -44,11 +44,24 @@ export const mcpHandler = async (c: Context): Promise<Response> => {
     sessionIdGenerator: undefined, // stateless mode
   });
 
-  try {
-    await server.connect(transport);
-    return await transport.handleRequest(c.req.raw);
-  } finally {
-    // 요청 처리 후 transport 정리 (리소스 누수 방지)
+  await server.connect(transport);
+  const response = await transport.handleRequest(c.req.raw);
+
+  if (!response.body) {
+    // body 없음 → 즉시 정리
     await transport.close().catch(() => undefined);
+    return response;
   }
+
+  // SSE 응답: body를 다 소비한 후에 transport 정리
+  // (finally에서 즉시 close하면 SSE stream이 끊겨 클라이언트 타임아웃 발생)
+  const { readable, writable } = new TransformStream<Uint8Array>();
+  response.body.pipeTo(writable).finally(() => {
+    transport.close().catch(() => undefined);
+  });
+
+  return new Response(readable, {
+    status: response.status,
+    headers: response.headers,
+  });
 };
