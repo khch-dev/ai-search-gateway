@@ -1,0 +1,9 @@
+name = "search-gateway"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+# TASK-0 결과에 따라 MCP SDK가 Node.js API를 필요로 하면 아래 주석 해제
+# compatibility_flags = ["nodejs_compat"]
+
+[vars]
+SEARCH_HOST_ORIGIN = "https://search-host.pages.dev"
+# 배포 후 실제 Pages 도메인으로 교체
