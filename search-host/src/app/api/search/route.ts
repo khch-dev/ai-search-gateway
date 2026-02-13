@@ -24,10 +24,24 @@ function getGatewayPath(protocol: Protocol): string {
   }
 }
 
+function maskToken(s: string): string {
+  if (!s || s.length < 8) return '***';
+  return `${s.slice(0, 4)}...${s.slice(-4)}`;
+}
+
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const body = await request.json().catch(() => null) as SearchRequestBody | null;
 
+  // [search-host] HTTP 수신 정보
+  console.log('[search-host] HTTP 수신:', {
+    method: request.method,
+    url: request.url,
+    bodyKeys: body && typeof body === 'object' ? Object.keys(body) : null,
+    queryLength: body?.query?.length ?? 0,
+  });
+
   if (!body) {
+    console.log('[search-host] HTTP 응답:', { status: 400, bodySummary: 'Invalid JSON body' });
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
@@ -35,6 +49,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   // 필수 필드 검증
   if (!accountId?.trim() || !apiToken?.trim() || !autoragName?.trim() || !query?.trim()) {
+    console.log('[search-host] HTTP 응답:', { status: 400, bodySummary: 'Missing required fields' });
     return NextResponse.json(
       { error: 'Missing required fields: accountId, apiToken, autoragName, query' },
       { status: 400 },
@@ -43,6 +58,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const gatewayUrl = process.env['GATEWAY_URL'];
   if (!gatewayUrl) {
+    console.log('[search-host] HTTP 응답:', { status: 503, bodySummary: 'Gateway not configured' });
     return NextResponse.json({ error: 'Gateway not configured' }, { status: 503 });
   }
 
@@ -70,9 +86,21 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     'X-CF-API-Token': apiToken.trim(),
     'X-CF-Autorag-Name': autoragName.trim(),
     'Content-Type': 'application/json',
-    // F4: MCP StreamableHTTPServerTransport가 SSE 대신 JSON 응답을 보내도록 명시
+    // MCP: text/event-stream 없이 application/json만 지정 → transport가 SSE 대신 JSON 응답 반환
     'Accept': 'application/json',
   };
+
+  // [search-host] 타 서버(Gateway) HTTP 요청 정보
+  console.log('[search-host] 타 서버 HTTP 요청:', {
+    method: 'POST',
+    url: targetUrl,
+    headers: {
+      'X-CF-Account-ID': accountId.trim(),
+      'X-CF-API-Token': maskToken(apiToken),
+      'X-CF-Autorag-Name': autoragName.trim(),
+    },
+    bodyLength: gatewayBody.length,
+  });
 
   try {
     const gatewayResponse = await fetch(targetUrl, {
@@ -90,10 +118,35 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       responseData = { raw: responseText };
     }
 
-    return NextResponse.json(responseData, { status: gatewayResponse.status });
+    // [search-host] 타 서버(Gateway) 응답 정보
+    const bodySummary =
+      typeof responseData === 'object' && responseData !== null
+        ? Array.isArray((responseData as Record<string, unknown>).results)
+          ? `results.length=${(responseData as { results?: unknown[] }).results?.length ?? 0}`
+          : 'result' in (responseData as object)
+            ? 'result'
+            : 'content' in (responseData as object)
+              ? 'content'
+              : Object.keys(responseData as object).join(',')
+        : String(responseData).slice(0, 80);
+    console.log('[search-host] 타 서버 응답:', {
+      status: gatewayResponse.status,
+      bodySummary,
+    });
+
+    // Gateway 응답 원문을 그대로 화면에 노출하기 위해 payload에 포함
+    const payload =
+      typeof responseData === 'object' && responseData !== null && !Array.isArray(responseData)
+        ? { ...(responseData as object), _rawGatewayPayload: responseText }
+        : { _rawGatewayPayload: responseText, _parsed: responseData };
+    const res = NextResponse.json(payload, { status: gatewayResponse.status });
+    console.log('[search-host] HTTP 응답:', { status: gatewayResponse.status, bodySummary });
+    return res;
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log('[search-host] HTTP 응답:', { status: 502, bodySummary: `error: ${msg}` });
     return NextResponse.json(
-      { error: `Gateway request failed: ${err instanceof Error ? err.message : String(err)}` },
+      { error: `Gateway request failed: ${msg}` },
       { status: 502 },
     );
   }
