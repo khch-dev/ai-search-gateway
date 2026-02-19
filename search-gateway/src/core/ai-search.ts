@@ -55,22 +55,32 @@ export async function searchAutoRAG(
   });
 
   const responseBodyText = await response.text();
-  // npm run dev 시 터미널에 수신 결과 출력
-  console.log('[search-gateway] AI Search 수신 결과 (원문):', responseBodyText);
 
-  const json = JSON.parse(responseBodyText) as AutoRAGResponse;
+  // F1: response.ok 체크 먼저, 실패 시 JSON 파싱 없이 상태 정보로 throw
+  if (!response.ok) {
+    throw new Error(`AutoRAG API error: ${response.status} ${response.statusText} - ${responseBodyText.slice(0, 200)}`);
+  }
 
-  // [search-gateway] 타 서버(Cloudflare API) 응답 정보
+  // F2: 응답 원문 전체 대신 요약만 로그 (민감 데이터 CF 대시보드 저장 방지)
+  console.log('[search-gateway] AI Search 응답 수신:', {
+    status: response.status,
+    bodyLength: responseBodyText.length,
+    preview: responseBodyText.slice(0, 100),
+  });
+
+  let json: AutoRAGResponse;
+  try {
+    json = JSON.parse(responseBodyText) as AutoRAGResponse;
+  } catch {
+    throw new Error(`AutoRAG API returned non-JSON response (${response.status}): ${responseBodyText.slice(0, 200)}`);
+  }
+
   const dataLen = json.result?.data?.length ?? 0;
   console.log('[search-gateway] 타 서버 응답:', {
     status: response.status,
     success: json.success,
     resultDataLength: dataLen,
   });
-
-  if (!response.ok) {
-    throw new Error(`AutoRAG API error: ${response.status} ${response.statusText}`);
-  }
 
   if (!json.success) {
     const msg = json.errors?.map((e) => e.message).join(', ') ?? 'Unknown error';

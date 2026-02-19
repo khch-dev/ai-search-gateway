@@ -41,7 +41,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const { protocol, format, query } = body;
 
-  // 필수 필드 검증
+  // F8: protocol, format, query 유효성 검사
+  const validProtocols: Protocol[] = ['mcp', 'nlweb', 'llm-ingest'];
+  const validFormats = ['html', 'markdown', 'json-ld'] as const;
+
+  if (!protocol || !validProtocols.includes(protocol)) {
+    return NextResponse.json({ error: `Invalid protocol. Must be one of: ${validProtocols.join(', ')}` }, { status: 400 });
+  }
+  if (!format || !(validFormats as readonly string[]).includes(format)) {
+    return NextResponse.json({ error: `Invalid format. Must be one of: ${validFormats.join(', ')}` }, { status: 400 });
+  }
   if (!query?.trim()) {
     console.log('[search-host] HTTP 응답:', { status: 400, bodySummary: 'Missing required fields' });
     return NextResponse.json(

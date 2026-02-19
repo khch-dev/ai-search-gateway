@@ -5,6 +5,7 @@ const KV_BASE = 'https://api.cloudflare.com/client/v4';
 
 interface KVListResponse {
   result: Array<{ name: string }>;
+  result_info?: { cursor?: string; count?: number };
   success: boolean;
   errors: Array<{ message: string }>;
 }
@@ -14,19 +15,16 @@ interface KVErrorResponse {
   errors: Array<{ message: string }>;
 }
 
+// F6: body 파라미터 제거 - GET/DELETE 전용, 쓰기 요청은 각 함수에서 직접 fetch 사용
 async function kvFetch(
   method: string,
   path: string,
   apiToken: string,
-  body?: string,
 ): Promise<Response> {
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${apiToken}`,
-  };
-  if (body !== undefined) {
-    headers['Content-Type'] = 'application/json';
-  }
-  return fetch(`${KV_BASE}${path}`, { method, headers, body });
+  return fetch(`${KV_BASE}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${apiToken}` },
+  });
 }
 
 /**
@@ -79,27 +77,35 @@ export async function putValue(
 
 /**
  * KV 네임스페이스의 모든 키 이름 목록을 반환합니다.
+ * F10: cursor 기반 페이지네이션으로 1000개 초과 키도 전체 반환
  */
 export async function listKeys(
   accountId: string,
   apiToken: string,
   namespaceId: string,
 ): Promise<string[]> {
-  const res = await kvFetch(
-    'GET',
-    `/accounts/${accountId}/storage/kv/namespaces/${namespaceId}/keys`,
-    apiToken,
-  );
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`KV LIST failed (${res.status}): ${text}`);
-  }
-  const json = (await res.json()) as KVListResponse;
-  if (!json.success) {
-    const msg = json.errors.map((e) => e.message).join(', ');
-    throw new Error(`KV LIST API error: ${msg}`);
-  }
-  return json.result.map((item) => item.name);
+  const allKeys: string[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const path = cursor
+      ? `/accounts/${accountId}/storage/kv/namespaces/${namespaceId}/keys?cursor=${encodeURIComponent(cursor)}`
+      : `/accounts/${accountId}/storage/kv/namespaces/${namespaceId}/keys`;
+    const res = await kvFetch('GET', path, apiToken);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`KV LIST failed (${res.status}): ${text}`);
+    }
+    const json = (await res.json()) as KVListResponse;
+    if (!json.success) {
+      const msg = json.errors.map((e) => e.message).join(', ');
+      throw new Error(`KV LIST API error: ${msg}`);
+    }
+    allKeys.push(...json.result.map((item) => item.name));
+    cursor = json.result_info?.cursor || undefined;
+  } while (cursor);
+
+  return allKeys;
 }
 
 /**
@@ -118,8 +124,14 @@ export async function deleteValue(
   );
   if (!res.ok) {
     const text = await res.text();
-    const json = JSON.parse(text) as KVErrorResponse;
-    const msg = json.errors?.map((e) => e.message).join(', ') ?? text;
+    // F3: JSON.parse try/catch - 비-JSON 응답(HTML 에러 페이지 등) 대비
+    let msg = text;
+    try {
+      const json = JSON.parse(text) as KVErrorResponse;
+      msg = json.errors?.map((e) => e.message).join(', ') ?? text;
+    } catch {
+      // JSON 파싱 실패 시 원문 사용
+    }
     throw new Error(`KV DELETE failed (${res.status}): ${msg}`);
   }
 }
