@@ -4,9 +4,12 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { z } from 'zod';
 import { searchAutoRAG } from '../core/ai-search';
 import { loadCredentials, MISSING_CREDENTIALS_ERROR } from '../core/credentials';
+import { enrichResultsFromR2 } from '../core/r2-page';
 import { getFormatter, type FormatType } from '../formatters/index';
 import type { Env } from '../index';
 
+// MCP Server 동작: JSON-RPC 2.0 (initialize / tools/call). tools/call 결과는
+// result: { content: [{ type: 'text', text: string }] } 형태로 반환 (스펙 준수).
 // MCP SDK 기반 MCP Server 구현
 // - McpServer: MCP 프로토콜 라이프사이클(initialize → initialized → tools/call) 자동 처리
 // - WebStandardStreamableHTTPServerTransport: Cloudflare Workers Web Standard API 호환
@@ -18,6 +21,7 @@ export const mcpHandler = async (c: Context<{ Bindings: Env }>): Promise<Respons
   if (!creds) return c.json(MISSING_CREDENTIALS_ERROR, 503);
 
   const { accountId, searchApiToken, autoragName } = creds;
+  const r2 = c.env.R2_AI_SEARCH;
 
   const server = new McpServer({
     name: 'search-gateway',
@@ -36,13 +40,15 @@ export const mcpHandler = async (c: Context<{ Bindings: Env }>): Promise<Respons
     },
     async ({ query, format }) => {
       const results = await searchAutoRAG(accountId, searchApiToken, autoragName, query);
-      const text = getFormatter(format as FormatType).format(results);
+      const enriched = await enrichResultsFromR2(r2, results);
+      const text = getFormatter(format as FormatType).format(enriched);
       return { content: [{ type: 'text' as const, text }] };
     },
   );
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined, // stateless mode
+    enableJsonResponse: true, // MCP 응답을 JSON-RPC 2.0 단일/배치 JSON으로 직접 반환 (다른 도구에서 MCP Server로 사용 가능)
   });
 
   await server.connect(transport);

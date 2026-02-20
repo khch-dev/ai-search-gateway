@@ -1,6 +1,7 @@
 import type { Context } from 'hono';
 import { searchAutoRAG, type SearchFilter } from '../core/ai-search';
 import { loadCredentials, MISSING_CREDENTIALS_ERROR } from '../core/credentials';
+import { enrichResultsFromR2 } from '../core/r2-page';
 import type { Env } from '../index';
 import type { AISearchResult } from '../core/ai-search';
 
@@ -39,8 +40,9 @@ function buildSchemaMarkup(results: AISearchResult[]): object {
   };
 }
 
-// IAB CMP LLM Ingest API 응답 포맷 (스펙 Working Group 단계)
-// 스펙 변경 시 이 인터페이스와 핸들러만 수정하면 됨
+// LLM Ingest 서버 동작: IAB CMP / CoMP LLM Ingest 스타일 응답.
+// 응답 포맷: application/json (JSON-LD 아님). content, metadata, schema_markup, billing 필드 반환.
+// schema_markup 필드만 Schema.org JSON-LD(ItemList) 포함.
 export interface LLMIngestResponse {
   content: string;
   metadata: {
@@ -91,17 +93,19 @@ export const llmIngestHandler = async (c: Context<{ Bindings: Env }>): Promise<R
     return c.json({ error: `AutoRAG error: ${err instanceof Error ? err.message : String(err)}` }, 502);
   }
 
-  const content = results.map((r) => r.content).join('\n\n');
+  const enriched = await enrichResultsFromR2(c.env.R2_AI_SEARCH, results);
+
+  const content = enriched.map((r) => r.content).join('\n\n');
   const tokenCount = Math.ceil(content.length / 4);
 
   // F9: JsonLdFormatter 직접 사용 제거 → buildSchemaMarkup으로 직접 객체 구성
-  const schemaMarkup = buildSchemaMarkup(results);
+  const schemaMarkup = buildSchemaMarkup(enriched);
 
   const response: LLMIngestResponse = {
     content,
     metadata: {
-      title: results[0]?.title ?? query,
-      content_id: crypto.randomUUID(),
+      title: enriched[0]?.title ?? query,
+      content_id: enriched[0]?.contentId ?? crypto.randomUUID(),
       token_count: tokenCount,
     },
     schema_markup: schemaMarkup,

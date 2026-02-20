@@ -1,8 +1,57 @@
 import { type NextRequest, NextResponse } from 'next/server';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 export const runtime = 'edge';
+
+import type { GatewayLogEntry } from '../../types/gateway-log';
+import { getAccessToken, invalidateToken } from '../../lib/gateway-auth';
+
+/** 로깅: 헤더 크기 제한을 위해 본문 길이 제한 */
+const MAX_LOG_BODY_LEN = 800;
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max) + '…';
+}
+
+function createLogEntry(
+  method: string,
+  url: string,
+  requestBody: string,
+  responseStatus: number,
+  responseBody: string,
+): GatewayLogEntry {
+  return {
+    id: crypto.randomUUID(),
+    method,
+    url,
+    requestBody: truncate(requestBody, MAX_LOG_BODY_LEN),
+    responseStatus,
+    responseBody: truncate(responseBody, MAX_LOG_BODY_LEN),
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function addLogEntry(
+  log: GatewayLogEntry[],
+  method: string,
+  url: string,
+  requestBody: string,
+  responseStatus: number,
+  responseBody: string,
+): void {
+  log.push(createLogEntry(method, url, requestBody, responseStatus, responseBody));
+}
+
+function setLogHeader(res: NextResponse, log: GatewayLogEntry[]): void {
+  if (log.length > 0) {
+    try {
+      res.headers.set('X-Search-Log', JSON.stringify(log));
+      res.headers.set('Access-Control-Expose-Headers', 'X-Search-Log');
+    } catch {
+      // 헤더가 너무 크면 무시
+    }
+  }
+}
 
 type Protocol = 'mcp' | 'nlweb' | 'llm-ingest';
 
@@ -21,6 +70,31 @@ function getGatewayPath(protocol: Protocol): string {
     case 'llm-ingest':
       return '/llm-ingest';
   }
+}
+
+/** MCP 스펙: initialize는 배치에 넣지 않고 단일 요청으로 보냄 (스펙 준수) */
+const MCP_PROTOCOL_VERSION = '2025-03-26';
+
+function buildMcpInitializeRequest(): unknown {
+  return {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: {
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: 'search-host', version: '0.1.0' },
+    },
+  };
+}
+
+function buildMcpToolsCallRequest(query: string, format: 'html' | 'markdown' | 'json-ld'): unknown {
+  return {
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'search', arguments: { query, format } },
+  };
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -66,69 +140,171 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   const targetUrl = `${gatewayUrl}${getGatewayPath(protocol)}`;
+  const wantGatewayLog = request.headers.get('X-Want-Gateway-Log') === 'true';
 
-  // MCP 프로토콜: SDK Client를 사용하여 표준 MCP 라이프사이클 수행
-  // (initialize → initialized → tools/call 핸드셰이크 자동 처리)
-  // 자격증명은 search-gateway가 KV 또는 .dev.vars에서 직접 로드
-  if (protocol === 'mcp') {
-    console.log('[search-host] 타 서버 HTTP 요청 (MCP SDK):', { url: targetUrl });
+  // OAuth 2.0 액세스 토큰 취득 (모듈 레벨 캐시, 만료 5분 전 선제 갱신)
+  let token: string;
+  try {
+    token = await getAccessToken();
+  } catch {
+    return NextResponse.json({ error: 'Authentication service unavailable' }, { status: 503 });
+  }
 
-    const transport = new StreamableHTTPClientTransport(new URL(targetUrl));
+  // MCP: 스펙대로 1) initialize 단일 POST → 2) tools/call POST. 로그는 호출별로 스트리밍.
+  if (protocol === 'mcp' && wantGatewayLog) {
+    const encoder = new TextEncoder();
+    const { readable, writable } = new TransformStream<Uint8Array>();
+    const writer = writable.getWriter();
+    const baseHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      Authorization: `Bearer ${token}`,
+    };
 
-    const client = new Client({ name: 'search-host', version: '0.1.0' });
-    try {
-      await client.connect(transport); // initialize → initialized 핸드셰이크 자동 처리
-      const result = await client.callTool({ name: 'search', arguments: { query, format } });
+    (async () => {
+      try {
+        const initBody = JSON.stringify(buildMcpInitializeRequest());
+        const initRes = await fetch(targetUrl, { method: 'POST', headers: baseHeaders, body: initBody });
+        const initText = await initRes.text();
+        const entry1 = createLogEntry('POST', targetUrl, initBody, initRes.status, initText);
+        await writer.write(encoder.encode(JSON.stringify({ type: 'log', entry: entry1 }) + '\n'));
 
-      // F6 반영: tool handler 내부 에러는 SDK가 isError: true로 반환 (예외 미발생)
-      // result.content 타입을 명시적으로 캐스팅 (SDK 반환 타입이 unknown인 경우 대응)
-      type ContentItem = { type: string; text?: string };
-      const content = (result.content as ContentItem[] | undefined) ?? [];
+        if (!initRes.ok) {
+          if (initRes.status === 401) {
+            await writer.write(encoder.encode(JSON.stringify({ type: 'error', message: 'Authentication failed' }) + '\n'));
+            await writer.close();
+            return;
+          }
+          await writer.write(encoder.encode(JSON.stringify({ type: 'result', body: initText }) + '\n'));
+          await writer.close();
+          return;
+        }
+        const initJson = JSON.parse(initText) as { result?: { protocolVersion?: string }; error?: unknown };
+        if (initJson.error) {
+          await writer.write(encoder.encode(JSON.stringify({ type: 'result', body: initText }) + '\n'));
+          await writer.close();
+          return;
+        }
+        const protocolVersion = initJson.result?.protocolVersion ?? MCP_PROTOCOL_VERSION;
+        const sessionId = initRes.headers.get('mcp-session-id') ?? undefined;
+        const callHeaders = { ...baseHeaders, 'mcp-protocol-version': protocolVersion };
+        if (sessionId) callHeaders['mcp-session-id'] = sessionId;
 
-      if (result.isError) {
-        const firstContent = content[0];
-        const errMsg = firstContent?.type === 'text' && firstContent.text ? firstContent.text : 'MCP tool 실행 중 오류가 발생했습니다.';
-        console.log('[search-host] HTTP 응답 (MCP isError):', { error: errMsg });
-        return NextResponse.json({ error: errMsg }, { status: 502 });
+        const callBody = JSON.stringify(buildMcpToolsCallRequest(query, format));
+        const callRes = await fetch(targetUrl, { method: 'POST', headers: callHeaders, body: callBody });
+        const callText = await callRes.text();
+        const entry2 = createLogEntry('POST', targetUrl, callBody, callRes.status, callText);
+        await writer.write(encoder.encode(JSON.stringify({ type: 'log', entry: entry2 }) + '\n'));
+        if (callRes.status === 401) {
+          // 스트리밍 중 401: 재시도 불가, 에러 이벤트 발행
+          await writer.write(encoder.encode(JSON.stringify({ type: 'error', message: 'Authentication failed' }) + '\n'));
+          return;
+        }
+        await writer.write(encoder.encode(JSON.stringify({ type: 'result', body: callText }) + '\n'));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await writer.write(encoder.encode(JSON.stringify({ type: 'error', message: msg }) + '\n'));
+      } finally {
+        await writer.close();
       }
+    })();
 
-      const firstContent = content[0];
-      const text = firstContent?.type === 'text' && firstContent.text ? firstContent.text : '';
-      console.log('[search-host] HTTP 응답 (MCP):', { textLength: text.length });
-      return NextResponse.json({ text });
+    return new NextResponse(readable, {
+      headers: { 'Content-Type': 'application/x-ndjson', 'X-MCP-Stream': 'true' },
+    });
+  }
+
+  if (protocol === 'mcp') {
+    const gatewayLog: GatewayLogEntry[] = [];
+    const baseHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      Authorization: `Bearer ${token}`,
+    };
+    try {
+      const initBody = JSON.stringify(buildMcpInitializeRequest());
+      let initRes = await fetch(targetUrl, { method: 'POST', headers: baseHeaders, body: initBody });
+      // 401: 토큰 무효화 후 1회 재시도
+      if (initRes.status === 401) {
+        invalidateToken();
+        const retryToken = await getAccessToken();
+        baseHeaders['Authorization'] = `Bearer ${retryToken}`;
+        initRes = await fetch(targetUrl, { method: 'POST', headers: baseHeaders, body: initBody });
+      }
+      const initText = await initRes.text();
+      addLogEntry(gatewayLog, 'POST', targetUrl, initBody, initRes.status, initText);
+      if (!initRes.ok) {
+        const res = new NextResponse(initText, {
+          status: initRes.status,
+          headers: { 'Content-Type': initRes.headers.get('Content-Type') ?? 'application/json' },
+        });
+        setLogHeader(res, gatewayLog);
+        return res;
+      }
+      const initJson = JSON.parse(initText) as { result?: { protocolVersion?: string }; error?: unknown };
+      if (initJson.error) {
+        const res = new NextResponse(initText, { status: 400, headers: { 'Content-Type': 'application/json' } });
+        setLogHeader(res, gatewayLog);
+        return res;
+      }
+      const protocolVersion = initJson.result?.protocolVersion ?? MCP_PROTOCOL_VERSION;
+      const sessionId = initRes.headers.get('mcp-session-id') ?? undefined;
+      const callHeaders = { ...baseHeaders, 'mcp-protocol-version': protocolVersion };
+      if (sessionId) callHeaders['mcp-session-id'] = sessionId;
+      const callBody = JSON.stringify(buildMcpToolsCallRequest(query, format));
+      let callRes = await fetch(targetUrl, { method: 'POST', headers: callHeaders, body: callBody });
+      // callRes 401: 새 토큰으로 재시도 (initRes retry 이후 세션 토큰이 갱신됐을 수 있으므로)
+      if (callRes.status === 401) {
+        invalidateToken();
+        const retryToken = await getAccessToken();
+        callHeaders['Authorization'] = `Bearer ${retryToken}`;
+        callRes = await fetch(targetUrl, { method: 'POST', headers: callHeaders, body: callBody });
+      }
+      const callText = await callRes.text();
+      addLogEntry(gatewayLog, 'POST', targetUrl, callBody, callRes.status, callText);
+      const res = new NextResponse(callText, {
+        status: callRes.status,
+        headers: { 'Content-Type': callRes.headers.get('Content-Type') ?? 'application/json' },
+      });
+      setLogHeader(res, gatewayLog);
+      return res;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.log('[search-host] HTTP 응답 (MCP error):', { status: 502, error: msg });
-      return NextResponse.json({ error: msg }, { status: 502 });
-    } finally {
-      await client.close().catch(() => undefined);
+      return NextResponse.json(
+        { jsonrpc: '2.0' as const, id: null, error: { code: -32603, message: msg } },
+        { status: 502 },
+      );
     }
   }
 
   // NLWeb / LLM-Ingest: 기존 fetch proxy 방식 유지
-  // 자격증명은 search-gateway가 KV 또는 .dev.vars에서 직접 로드
+  const gatewayLog: GatewayLogEntry[] = [];
   const gatewayBody = JSON.stringify({ query, format });
   const requestHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
     'Accept': 'application/json',
+    Authorization: `Bearer ${token}`,
   };
 
-  // [search-host] 타 서버(Gateway) HTTP 요청 정보
-  console.log('[search-host] 타 서버 HTTP 요청:', {
-    method: 'POST',
-    url: targetUrl,
-    bodyLength: gatewayBody.length,
-  });
+  console.log('[search-host] 타 서버 HTTP 요청:', { method: 'POST', url: targetUrl, bodyLength: gatewayBody.length });
 
   try {
-    const gatewayResponse = await fetch(targetUrl, {
+    let gatewayResponse = await fetch(targetUrl, {
       method: 'POST',
       headers: requestHeaders,
       body: gatewayBody,
     });
+    // 401: 토큰 무효화 후 1회 재시도
+    if (gatewayResponse.status === 401) {
+      invalidateToken();
+      const retryToken = await getAccessToken();
+      requestHeaders['Authorization'] = `Bearer ${retryToken}`;
+      gatewayResponse = await fetch(targetUrl, { method: 'POST', headers: requestHeaders, body: gatewayBody });
+    }
 
-    // 응답이 JSON이 아닐 수 있으므로 text()로 먼저 읽고 파싱 시도
     const responseText = await gatewayResponse.text();
+    addLogEntry(gatewayLog, 'POST', targetUrl, gatewayBody, gatewayResponse.status, responseText);
+
     let responseData: unknown;
     try {
       responseData = JSON.parse(responseText);
@@ -136,7 +312,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       responseData = { raw: responseText };
     }
 
-    // [search-host] 타 서버(Gateway) 응답 정보
     const bodySummary =
       typeof responseData === 'object' && responseData !== null
         ? Array.isArray((responseData as Record<string, unknown>).results)
@@ -147,23 +322,27 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
               ? 'content'
               : Object.keys(responseData as object).join(',')
         : String(responseData).slice(0, 80);
-    console.log('[search-host] 타 서버 응답:', {
-      status: gatewayResponse.status,
-      bodySummary,
-    });
+    console.log('[search-host] 타 서버 응답:', { status: gatewayResponse.status, bodySummary });
 
     const payload =
       typeof responseData === 'object' && responseData !== null && !Array.isArray(responseData)
         ? { ...(responseData as object), _rawGatewayPayload: responseText }
         : { _rawGatewayPayload: responseText, _parsed: responseData };
-    const res = NextResponse.json(payload, { status: gatewayResponse.status });
+    const resPayload = wantGatewayLog && gatewayLog.length > 0
+      ? { ...payload, _gatewayLog: gatewayLog }
+      : payload;
+    const res = NextResponse.json(resPayload, { status: gatewayResponse.status });
+    if (!wantGatewayLog) setLogHeader(res, gatewayLog);
     console.log('[search-host] HTTP 응답:', { status: gatewayResponse.status, bodySummary });
     return res;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.log('[search-host] HTTP 응답:', { status: 502, bodySummary: `error: ${msg}` });
+    const hint = /fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|Failed to fetch/i.test(String(msg))
+      ? ' 게이트웨이 URL(GATEWAY_URL)과 게이트웨이 서버 실행 여부를 확인하세요.'
+      : '';
+    console.error('[search-host] Gateway request failed:', msg);
     return NextResponse.json(
-      { error: `Gateway request failed: ${msg}` },
+      { error: `게이트웨이에 연결할 수 없습니다.${hint} (원인: ${msg})` },
       { status: 502 },
     );
   }

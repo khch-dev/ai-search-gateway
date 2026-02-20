@@ -1,11 +1,12 @@
 import type { Context } from 'hono';
 import { searchAutoRAG, type SearchFilter } from '../core/ai-search';
 import { loadCredentials, MISSING_CREDENTIALS_ERROR } from '../core/credentials';
+import { enrichResultsFromR2 } from '../core/r2-page';
 import type { Env } from '../index';
 
-// NLWeb 스펙 기반 custom extension 구현
-// 공식 NLWeb 스펙: https://github.com/microsoft/NLWeb/blob/main/docs/nlweb-rest-api.md
-// 주의: 공식 스펙과 schema_object 구조 등이 다를 수 있음 (custom extension)
+// NLWeb 서버 동작: /ask 응답은 query_id + results 배열.
+// 스펙: 각 결과에 url, name, site, score, description, schema_object (공식 nlweb-rest-api.md 준수).
+// schema_object는 Schema.org WebPage 등으로 인코딩 (custom extension 가능).
 
 interface NLWebRequest {
   query: string;
@@ -75,14 +76,17 @@ export const nlwebAskHandler = async (c: Context<{ Bindings: Env }>): Promise<Re
     return c.json({ error: `AutoRAG error: ${err instanceof Error ? err.message : String(err)}` }, 502);
   }
 
+  const enriched = await enrichResultsFromR2(c.env.R2_AI_SEARCH, results);
+
   // streaming 요청이 와도 Workers에서는 SSE 미지원 → 항상 application/json 반환
   const queryId = body.query_id ?? crypto.randomUUID();
 
   return c.json({
     query_id: queryId,
-    results: results.map((r) => ({
+    results: enriched.map((r) => ({
       url: r.url,
       name: r.title,
+      site: body.site ?? null,
       score: r.score ?? 1.0,
       description: r.content,
       schema_object: {

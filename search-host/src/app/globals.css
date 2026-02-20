@@ -12,9 +12,9 @@ body {
 }
 
 .main-container {
-  max-width: 900px;
+  max-width: 1600px;
   margin: 0 auto;
-  padding: 2rem 1rem;
+  padding: 2rem 2rem;
 }
 
 .site-header {
@@ -187,6 +187,38 @@ body {
 }
 
 /* Results */
+/* 로깅 영역 + 결과 영역 좌/우 배치, 리사이저로 폭 조절 */
+.search-log-and-results {
+  display: grid;
+  align-items: stretch;
+  margin-bottom: 1.5rem;
+  gap: 0;
+}
+
+.search-log-and-results__pane {
+  min-width: 0;
+  overflow: auto;
+}
+
+.search-log-and-results__resizer {
+  width: 8px;
+  min-width: 8px;
+  cursor: col-resize;
+  background: #e5e7eb;
+  margin: 0;
+  transition: background 0.15s;
+  user-select: none;
+}
+
+.search-log-and-results__resizer:hover,
+.search-log-and-results__resizer:active {
+  background: #4f46e5;
+}
+
+.search-results-only {
+  margin-bottom: 1.5rem;
+}
+
 .search-results-container {
   background: white;
   border-radius: 8px;
@@ -236,7 +268,88 @@ body {
   color: #999;
 }
 
-/* Markdown / JSON-LD 결과 */
+/* MCP Markdown 렌더링 영역 (react-markdown) */
+.markdown-rendered {
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+.markdown-rendered h1,
+.markdown-rendered h2,
+.markdown-rendered h3,
+.markdown-rendered h4 {
+  margin-top: 1.25em;
+  margin-bottom: 0.5em;
+  font-weight: 600;
+}
+
+.markdown-rendered h1 { font-size: 1.5rem; }
+.markdown-rendered h2 { font-size: 1.25rem; }
+.markdown-rendered h3 { font-size: 1.1rem; }
+.markdown-rendered h4 { font-size: 1rem; }
+
+.markdown-rendered p {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.markdown-rendered ul,
+.markdown-rendered ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.markdown-rendered li {
+  margin: 0.25em 0;
+}
+
+.markdown-rendered code {
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 0.875em;
+  background: #f1f5f9;
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+}
+
+.markdown-rendered pre {
+  margin: 0.75em 0;
+  padding: 1rem;
+  background: #1e293b;
+  color: #e2e8f0;
+  border-radius: 6px;
+  overflow: auto;
+  font-size: 0.875rem;
+}
+
+.markdown-rendered pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+.markdown-rendered a {
+  color: #4f46e5;
+  text-decoration: none;
+}
+
+.markdown-rendered a:hover {
+  text-decoration: underline;
+}
+
+.markdown-rendered blockquote {
+  margin: 0.5em 0;
+  padding-left: 1em;
+  border-left: 4px solid #cbd5e1;
+  color: #64748b;
+}
+
+.markdown-rendered hr {
+  margin: 1em 0;
+  border: none;
+  border-top: 1px solid #e2e8f0;
+}
+
+/* Markdown / JSON-LD 결과 (raw) */
 .markdown-results,
 .jsonld-results {
   background: #f8f8f8;
@@ -251,4 +364,218 @@ body {
 .whitespace-pre-wrap {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* MCP + HTML 분할 뷰 */
+.mcp-split-view {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.mcp-split-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0; /* grid cell이 content 크기로 늘어나는 것 방지 */
+  overflow: hidden;
+}
+
+.mcp-split-pane h3 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #555;
+  padding-bottom: 0.375rem;
+  border-bottom: 1px solid #eee;
+}
+
+/* Host ↔ Gateway 로그 영역 (고정 높이, DevTools 스타일) */
+.search-log-viewer {
+  background: #1e1e1e;
+  border-radius: 8px;
+  margin-bottom: 1.5rem;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+
+.search-log-viewer__header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: #252526;
+  border-bottom: 1px solid #3c3c3c;
+  font-size: 0.8125rem;
+}
+
+.search-log-viewer__title {
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.search-log-viewer__count {
+  color: #858585;
+}
+
+.search-log-viewer__empty {
+  color: #858585;
+  font-style: italic;
+}
+
+.search-log-viewer__clear {
+  margin-left: auto;
+  padding: 0.25rem 0.5rem;
+  background: transparent;
+  border: 1px solid #555;
+  border-radius: 4px;
+  color: #b0b0b0;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.search-log-viewer__clear:hover {
+  background: #3c3c3c;
+  color: #e0e0e0;
+}
+
+.search-log-viewer__body {
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-height: 85vh;
+  min-height: 6rem;
+}
+
+.search-log-viewer__body--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 8rem;
+}
+
+.search-log-viewer__placeholder {
+  color: #6d6d6d;
+  font-size: 0.875rem;
+}
+
+.search-log-viewer__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.search-log-viewer__entry {
+  border-bottom: 1px solid #333;
+}
+
+.search-log-viewer__entry:last-child {
+  border-bottom: none;
+}
+
+.search-log-viewer__summary {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: none;
+  color: #d4d4d4;
+  font-size: 0.8125rem;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.search-log-viewer__summary:hover {
+  background: #2d2d2d;
+}
+
+.search-log-viewer__method {
+  flex-shrink: 0;
+  width: 3rem;
+  color: #4ec9b0;
+  font-weight: 500;
+}
+
+.search-log-viewer__url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #9cdcfe;
+}
+
+.search-log-viewer__status {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.search-log-viewer__status--ok {
+  color: #4ec9b0;
+}
+
+.search-log-viewer__status--err {
+  color: #f48771;
+}
+
+.search-log-viewer__time {
+  flex-shrink: 0;
+  color: #858585;
+  font-size: 0.75rem;
+}
+
+.search-log-viewer__detail {
+  padding: 0.75rem 1rem;
+  background: #252526;
+  border-top: 1px solid #333;
+  position: relative;
+}
+
+.search-log-viewer__detail-section {
+  margin-bottom: 0.75rem;
+}
+
+.search-log-viewer__detail-section:last-of-type {
+  margin-bottom: 0;
+}
+
+.search-log-viewer__detail-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #858585;
+  margin-bottom: 0.25rem;
+}
+
+.search-log-viewer__pre {
+  margin: 0;
+  padding: 0.5rem;
+  background: #1e1e1e;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 10rem;
+  overflow: auto;
+}
+
+.search-log-viewer__copy {
+  position: absolute;
+  top: 0.75rem;
+  right: 1rem;
+  padding: 0.25rem 0.5rem;
+  background: #3c3c3c;
+  border: 1px solid #555;
+  border-radius: 4px;
+  color: #b0b0b0;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.search-log-viewer__copy:hover {
+  background: #4c4c4c;
+  color: #e0e0e0;
 }

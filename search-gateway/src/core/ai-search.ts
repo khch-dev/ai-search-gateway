@@ -9,6 +9,8 @@ export interface AISearchResult {
   title: string;   // AutoRAG 실제 응답 필드명 TASK-0 확인 필요 (name / title)
   content: string; // AutoRAG 실제 응답 필드명 TASK-0 확인 필요 (content / description / snippet)
   score?: number;
+  /** Content owner가 관리하는 ID (Cloudflare AI Search data[].content[0].id) — LLM Ingest content_id 등에 사용 */
+  contentId?: string;
 }
 
 /** search.sh와 동일한 필터 형식: { type, key, value } */
@@ -61,12 +63,12 @@ export async function searchAutoRAG(
     throw new Error(`AutoRAG API error: ${response.status} ${response.statusText} - ${responseBodyText.slice(0, 200)}`);
   }
 
-  // F2: 응답 원문 전체 대신 요약만 로그 (민감 데이터 CF 대시보드 저장 방지)
+  // 로컬 개발 시 전체 응답 확인용 로그
   console.log('[search-gateway] AI Search 응답 수신:', {
     status: response.status,
     bodyLength: responseBodyText.length,
-    preview: responseBodyText.slice(0, 100),
   });
+  console.log('[search-gateway] AI Search 응답 본문:\n' + responseBodyText);
 
   let json: AutoRAGResponse;
   try {
@@ -93,14 +95,21 @@ export async function searchAutoRAG(
     return [];
   }
 
-  // 터미널 테스트 기준 실제 API 응답: filename(URL), attributes.file.title, content[{ type, text }], score
+  // API 응답: content[{ type, text }] — 인덱싱 시 청크(64~512 토큰) 단위로 저장되므로
+  // 긴 JSON/코드 블록은 청크 경계에서 잘려 한 결과에 일부만 올 수 있음 (API 제한, gateway는 가공 없이 전달).
   const results: AISearchResult[] = data.map((item): AISearchResult => {
     const attrs = item['attributes'] as Record<string, unknown> | undefined;
     const file = attrs?.['file'] as Record<string, unknown> | undefined;
     const titleFromFile = file?.['title'] ?? file?.['description'];
     const rawContent = item['content'];
     let contentStr = '';
+    let contentId: string | undefined;
     if (Array.isArray(rawContent)) {
+      const first = rawContent[0];
+      if (first && typeof first === 'object' && 'id' in first) {
+        const idVal = (first as { id?: unknown }).id;
+        if (typeof idVal === 'string') contentId = idVal;
+      }
       contentStr = rawContent
         .map((c) => (c && typeof c === 'object' && 'text' in c ? (c as { text?: string }).text : ''))
         .filter(Boolean)
@@ -116,20 +125,18 @@ export async function searchAutoRAG(
       title: String(titleFromFile ?? item['title'] ?? item['name'] ?? ''),
       content: contentStr,
       score: typeof item['score'] === 'number' ? item['score'] : undefined,
+      contentId,
     };
   });
 
   // [search-gateway] AI Search가 반환한 검색 결과 로그
-  console.log('[search-gateway] AI Search 검색 결과:', {
-    count: results.length,
-    items: results.map((r, i) => ({
-      index: i + 1,
-      url: r.url,
-      title: r.title?.slice(0, 60) ?? '',
-      contentLength: r.content?.length ?? 0,
-      score: r.score,
-    })),
-  });
+  console.log('[search-gateway] AI Search 검색 결과 (%d건):', results.length);
+  for (const [i, r] of results.entries()) {
+    console.log(`  [${i + 1}] url: ${r.url}`);
+    console.log(`      title: ${r.title}`);
+    console.log(`      score: ${r.score ?? 'N/A'}`);
+    console.log(`      content (${r.content?.length ?? 0}자):\n${r.content}`);
+  }
 
   return results;
 }

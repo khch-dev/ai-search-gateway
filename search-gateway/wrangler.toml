@@ -7,7 +7,15 @@ compatibility_date = "2024-11-01"
 [vars]
 SEARCH_HOST_ORIGIN = "https://search-host.pages.dev"
 # 배포 후 실제 Pages 도메인으로 교체
+AUTH_SERVER_URL = "https://auth.nhnace-ai.com"
+# JWT_SECRET는 wrangler secret put JWT_SECRET 으로 등록 (절대 여기에 추가하지 말 것)
 
 [[kv_namespaces]]
 binding = "KV_CREDENTIALS"
 id = "3eee142dfb8c4580b8cc15e76bc3f84d"
+preview_id = "2e4c8e625db648459c64739018b872de"  # wrangler kv namespace create KV_CREDENTIALS --preview 결과값
+
+[[r2_buckets]]
+binding = "R2_AI_SEARCH"
+bucket_name = "ai-search-crimson-shadow-a101-14fadc"
+preview_bucket_name = "ai-search-crimson-shadow-a101-14fadc"  # wrangler r2 bucket create ai-search-dev
