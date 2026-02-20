@@ -113,10 +113,20 @@ export async function jwtAuthMiddleware(c: Context<{ Bindings: Env }>, next: Nex
 
     // payload 파싱 및 exp 검증
     const payloadBytes = base64UrlDecode(payloadPart);
-    const payloadJson = JSON.parse(new TextDecoder().decode(payloadBytes)) as { exp?: number };
+    const payloadJson = JSON.parse(new TextDecoder().decode(payloadBytes)) as { exp?: number; iat?: number };
     const now = Math.floor(Date.now() / 1000);
-    if (!payloadJson.exp || payloadJson.exp <= now) {
-      console.log('[jwt-auth] 인증 실패: 토큰 만료 또는 exp 없음', { path });
+    if (!payloadJson.exp) {
+      console.log('[jwt-auth] 인증 실패: exp 클레임 없음', { path });
+      return authErrorResponse(c, path, 'Invalid or expired token', authUrl);
+    }
+    // RFC 7519: exp는 Unix timestamp여야 하나, 일부 서버가 상대적 초(expires_in)를 넣는 경우 대응.
+    // 현재 Unix timestamp은 ~17억대. 1억(year 1973) 미만이면 확실히 상대값(expires_in).
+    const RELATIVE_EXP_THRESHOLD = 100_000_000;
+    const absExp = payloadJson.exp < RELATIVE_EXP_THRESHOLD && payloadJson.iat
+      ? payloadJson.iat + payloadJson.exp
+      : payloadJson.exp;
+    if (absExp <= now) {
+      console.log('[jwt-auth] 인증 실패: 토큰 만료', { path });
       return authErrorResponse(c, path, 'Invalid or expired token', authUrl);
     }
 
